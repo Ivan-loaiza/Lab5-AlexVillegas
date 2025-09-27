@@ -1,0 +1,346 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Chat Socket.IO UNA</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font:
+          13px Helvetica,
+          Arial;
+        background: #fafafa;
+        color: #111;
+      }
+      form {
+        background: #000;
+        padding: 8px 6px;
+        position: fixed;
+        bottom: 0;
+        width: 100%;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      form input {
+        border: 0;
+        padding: 10px;
+        outline: none;
+      }
+      form button {
+        width: 10%;
+        background: rgb(130, 224, 255);
+        border: none;
+        padding: 10px;
+        cursor: pointer;
+      }
+      #messages {
+        list-style-type: none;
+        margin: 0;
+        padding: 12px;
+        padding-bottom: 80px;
+        max-height: calc(100vh - 80px);
+        overflow: auto;
+      }
+      #messages li {
+        padding: 8px 12px;
+        margin-bottom: 6px;
+        border-radius: 6px;
+      }
+      #messages li:nth-child(odd) {
+        background: #eee;
+      }
+      .system {
+        color: #666;
+        font-style: italic;
+        background: transparent;
+        padding: 2px 6px;
+      }
+      #nombre,
+      #m {
+        display: inline-block;
+      }
+      #m {
+        flex: 1;
+        margin-right: 4px;
+        background: #fff;
+        border-radius: 4px;
+      }
+      #nombre {
+        width: 18%;
+        min-width: 120px;
+        background: #fff;
+        border-radius: 4px;
+        padding: 0 6px;
+      }
+      img.chat-img {
+        max-width: 320px;
+        max-height: 240px;
+        display: block;
+        margin-top: 6px;
+        border-radius: 4px;
+      }
+      video.chat-video {
+        max-width: 420px;
+        display: block;
+        margin-top: 6px;
+        border-radius: 4px;
+      }
+      iframe.chat-iframe {
+        max-width: 420px;
+        width: 100%;
+        height: 236px;
+        display: block;
+        margin-top: 6px;
+        border-radius: 4px;
+        border: 0;
+      }
+      .msg-header {
+        margin-bottom: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <ul id="messages"></ul>
+
+    <form id="chatForm">
+      <input id="nombre" autocomplete="off" placeholder="Username" />
+      <input id="m" autocomplete="off" placeholder="Escriba un mensaje" />
+      <button type="submit">Send</button>
+    </form>
+
+    <!-- socket.io + jquery (como tenías) -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.js"></script>
+    <script src="https://code.jquery.com/jquery-1.11.1.js"></script>
+
+    <script>
+      // ---- utilidades ----
+      // regex simple para detectar URLs
+      const urlRegex = /(https?:\/\/[^\s]+)/g;
+
+      // extensiones
+      const imageExt = /\.(png|jpe?g|gif|webp|svg)(\?.*)?$/i;
+      const videoExt = /\.(mp4|webm|ogg)(\?.*)?$/i;
+
+      // detecta YouTube y Vimeo y devuelve src para iframe si aplica
+      function getEmbedForVideo(url) {
+        const ytFull = url.match(
+          /(?:youtube\.com\/watch\?v=|youtube\.com\/embed\/|youtu\.be\/)([A-Za-z0-9\-_]+)/
+        );
+        if (ytFull)
+          return {
+            type: "iframe",
+            src: "https://www.youtube.com/embed/" + ytFull[1],
+          };
+        const vm = url.match(/vimeo\.com\/(\d+)/);
+        if (vm)
+          return {
+            type: "iframe",
+            src: "https://player.vimeo.com/video/" + vm[1],
+          };
+        return null;
+      }
+
+      // valida esquema, evita javascript: data: etc.
+      function isSafeUrl(url) {
+        try {
+          const u = new URL(url);
+          return u.protocol === "http:" || u.protocol === "https:";
+        } catch (e) {
+          return false;
+        }
+      }
+
+      // crea fragmento con texto/imagenes/iframes/links de forma segura
+      function renderMessageWithUrls(text) {
+        const frag = document.createDocumentFragment();
+        let lastIndex = 0;
+        // usamos replace con callback para obtener offsets
+        text.replace(urlRegex, function (match, url, offset) {
+          // texto antes del link
+          if (offset > lastIndex) {
+            frag.appendChild(
+              document.createTextNode(text.slice(lastIndex, offset))
+            );
+          }
+
+          lastIndex = offset + match.length;
+
+          if (!isSafeUrl(url)) {
+            frag.appendChild(document.createTextNode(url));
+            return match;
+          }
+
+          // imagen ? (con extensión conocida o intentamos genérico)
+          if (imageExt.test(url) || url.includes("picsum.photos")) {
+            const img = document.createElement("img");
+            img.className = "chat-img";
+            img.loading = "lazy";
+            img.referrerPolicy = "no-referrer";
+            img.src = url;
+            img.alt = "Imagen enlazada";
+
+            // si falla la carga, se reemplaza por un enlace clicable
+            img.onerror = function () {
+              const a = document.createElement("a");
+              a.href = url;
+              a.target = "_blank";
+              a.rel = "noopener noreferrer nofollow";
+              a.textContent = url;
+              img.replaceWith(a);
+            };
+
+            frag.appendChild(img);
+            return match;
+          }
+
+          // video archivo mp4, webm...
+          if (videoExt.test(url)) {
+            const video = document.createElement("video");
+            video.className = "chat-video";
+            video.controls = true;
+            video.src = url;
+            frag.appendChild(video);
+            return match;
+          }
+
+          // youtube / vimeo embed
+          const embed = getEmbedForVideo(url);
+          if (embed) {
+            const iframe = document.createElement("iframe");
+            iframe.className = "chat-iframe";
+            iframe.src = embed.src;
+            iframe.allow =
+              "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture";
+            iframe.allowFullscreen = true;
+            frag.appendChild(iframe);
+            return match;
+          }
+
+          // por defecto: link seguro
+          const a = document.createElement("a");
+          a.href = url;
+          a.target = "_blank";
+          a.rel = "noopener noreferrer nofollow";
+          a.appendChild(document.createTextNode(url)); // textContent seguro
+          frag.appendChild(a);
+          return match;
+        });
+
+        // texto final
+        if (lastIndex < text.length) {
+          frag.appendChild(document.createTextNode(text.slice(lastIndex)));
+        }
+
+        return frag;
+      }
+
+      // agrega mensaje al DOM sin usar innerHTML
+      function addMessageToDom(msgJson) {
+        const ul = document.getElementById("messages");
+        const li = document.createElement("li");
+
+        // header: nombre coloreado + (opcional) cabecera
+        const header = document.createElement("div");
+        header.className = "msg-header";
+
+        const nameNode = document.createElement("strong");
+        nameNode.style.color = msgJson.color || "#000";
+        nameNode.appendChild(document.createTextNode(msgJson.nombre || "Anon"));
+        header.appendChild(nameNode);
+
+        // separador
+        const sep = document.createTextNode(": ");
+        header.appendChild(sep);
+        li.appendChild(header);
+
+        // contenido con detección de URLs
+        const contentContainer = document.createElement("div");
+
+        const texto = String(msgJson.mensaje || "");
+
+        if (urlRegex.test(texto)) {
+          // render multimedia/links
+          const node = renderMessageWithUrls(texto);
+          contentContainer.appendChild(node);
+        } else {
+          // texto plano
+          contentContainer.appendChild(document.createTextNode(texto));
+        }
+
+        li.appendChild(contentContainer);
+
+        ul.appendChild(li);
+        // autoscroll
+        ul.scrollTop = ul.scrollHeight;
+      }
+
+      // ---- lógica principal (jQuery) ----
+      $(function () {
+        var socket = io();
+
+        var colorHexTxt = "";
+
+        // genera colores aleatorios en hexadeximal
+        function getRandomColor() {
+          var letters = "0123456789ABCDEF";
+          var color = "#";
+          for (var i = 0; i < 6; i++) {
+            color += letters[Math.floor(Math.random() * 16)];
+          }
+          return color;
+        }
+
+        $("#chatForm").submit(function (e) {
+          e.preventDefault();
+          var nombreTxt = $("#nombre").val() || "Anomimo";
+          var mensajeTxt = $("#m").val() || "";
+
+          if (colorHexTxt == "") {
+            colorHexTxt = getRandomColor();
+          }
+
+          var jsonMsg = {
+            nombre: nombreTxt,
+            mensaje: mensajeTxt,
+            color: colorHexTxt,
+          };
+          // emitimos JSON string como haces actualmente
+          socket.emit("Evento-Mensaje-Server", JSON.stringify(jsonMsg));
+          $("#m").val("");
+          return false;
+        });
+
+        // recibe evento del servidor
+        socket.on("Evento-Mensaje-Server", function (msg) {
+          // asumimos msg viene como string JSON (como tenías)
+          var msgJson;
+          try {
+            msgJson = JSON.parse(msg);
+          } catch (e) {
+            // mensaje mal formado -> mostrar como texto plano seguro
+            msgJson = { nombre: "server", mensaje: String(msg), color: "#333" };
+          }
+
+          // Agregar al DOM de forma segura (no innerHTML)
+          addMessageToDom(msgJson);
+        });
+
+        // indica cuando conecta (opcional)
+        socket.on("connect", function () {
+          // mostrar sistema
+          const sys = {
+            nombre: "system",
+            mensaje: "Conectado al servidor",
+            color: "#666",
+          };
+          addMessageToDom(sys);
+        });
+      });
+    </script>
+  </body>
+</html>
